@@ -323,6 +323,16 @@
       let lastResponseTime = 0;
       const COOLDOWN_MS = 5000;
       
+      // LocalStorage keys
+      const STORAGE_KEYS = {
+        API_KEY: 'ai_chat_api_key',
+        SYSTEM_PROMPT: 'ai_chat_system_prompt',
+        PROVIDER: 'ai_chat_provider',
+        CONTEXT_LIMIT: 'ai_chat_context_limit',
+        MAX_CHATS: 'ai_chat_max_chats',
+        REPLY_TO_AI: 'ai_chat_reply_to_ai'
+      };
+      
       // Configuration elements
       const providerSelect = document.getElementById('provider');
       const apiKeyInput = document.getElementById('apiKey');
@@ -337,9 +347,60 @@
       const statusDiv = document.getElementById('status');
       const messagesUl = document.getElementById('messages');
 
+      // Load settings from localStorage
+      function loadSettings() {
+        const savedApiKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
+        const savedSystemPrompt = localStorage.getItem(STORAGE_KEYS.SYSTEM_PROMPT);
+        const savedProvider = localStorage.getItem(STORAGE_KEYS.PROVIDER);
+        const savedContextLimit = localStorage.getItem(STORAGE_KEYS.CONTEXT_LIMIT);
+        const savedMaxChats = localStorage.getItem(STORAGE_KEYS.MAX_CHATS);
+        const savedReplyToAI = localStorage.getItem(STORAGE_KEYS.REPLY_TO_AI);
+
+        if (savedApiKey) {
+          apiKeyInput.value = savedApiKey;
+        }
+        
+        if (savedSystemPrompt) {
+          systemPromptInput.value = savedSystemPrompt;
+        }
+        
+        if (savedProvider) {
+          providerSelect.value = savedProvider;
+          // Trigger change event to update API key label
+          providerSelect.dispatchEvent(new Event('change'));
+        }
+        
+        if (savedContextLimit) {
+          contextLimitInput.value = savedContextLimit;
+          contextValueSpan.textContent = savedContextLimit;
+        }
+        
+        if (savedMaxChats) {
+          maxChatsInput.value = savedMaxChats;
+        }
+        
+        if (savedReplyToAI) {
+          replyToAIInput.checked = savedReplyToAI === 'true';
+        }
+      }
+
+      // Save settings to localStorage
+      function saveSettings() {
+        localStorage.setItem(STORAGE_KEYS.API_KEY, apiKeyInput.value);
+        localStorage.setItem(STORAGE_KEYS.SYSTEM_PROMPT, systemPromptInput.value);
+        localStorage.setItem(STORAGE_KEYS.PROVIDER, providerSelect.value);
+        localStorage.setItem(STORAGE_KEYS.CONTEXT_LIMIT, contextLimitInput.value);
+        localStorage.setItem(STORAGE_KEYS.MAX_CHATS, maxChatsInput.value);
+        localStorage.setItem(STORAGE_KEYS.REPLY_TO_AI, replyToAIInput.checked.toString());
+      }
+
+      // Initialize settings on page load
+      loadSettings();
+
       // Update context value display
       contextLimitInput.addEventListener('input', (e) => {
         contextValueSpan.textContent = e.target.value;
+        saveSettings(); // Save when context limit changes
       });
 
       // Update API key label when provider changes
@@ -351,7 +412,14 @@
           apiKeyLabel.textContent = 'Google Gemini API Key:';
           apiKeyInput.placeholder = 'Enter your Gemini API key';
         }
+        saveSettings(); // Save when provider changes
       });
+
+      // Save settings when other inputs change
+      apiKeyInput.addEventListener('blur', saveSettings);
+      systemPromptInput.addEventListener('blur', saveSettings);
+      maxChatsInput.addEventListener('blur', saveSettings);
+      replyToAIInput.addEventListener('change', saveSettings);
 
       // Generate AI client ID
       function generateAIClientId() {
@@ -434,10 +502,11 @@
         }
       }
 
-      async function generateAIResponse(newMessage) {
+      async function generateAIResponse(newMessage, retryCount = 0) {
         const apiKey = apiKeyInput.value.trim();
         const systemPrompt = systemPromptInput.value.trim();
         const provider = providerSelect.value;
+        const maxRetries = 3;
         
         if (!apiKey) {
           console.error('API key not provided');
@@ -525,9 +594,23 @@ ${contextMessages}
           }
         } catch (error) {
           console.error('Error generating AI response:', error);
-          if (error.message.includes('429')) {
-            displaySystemMessage('Rate limit exceeded. Waiting before retry...');
-            setTimeout(() => generateAIResponse(prompt), Math.random() * 5000 + 5000);
+          
+          // Check for specific error types that warrant retry
+          const shouldRetry = (
+            error.message.includes('429') || // Rate limit
+            error.message.includes('503') || // Service unavailable
+            error.message.includes('502') || // Bad gateway
+            error.message.includes('504')    // Gateway timeout
+          ) && retryCount < maxRetries;
+
+          if (shouldRetry) {
+            const delay = Math.min(1000 * Math.pow(2, retryCount), 30000) + Math.random() * 1000;
+            displaySystemMessage(`API error (${error.message.includes('429') ? 'rate limit' : 'service unavailable'}). Retrying in ${Math.round(delay/1000)}s... (${retryCount + 1}/${maxRetries})`);
+            setTimeout(() => generateAIResponse(newMessage, retryCount + 1), delay);
+          } else if (error.message.includes('429')) {
+            displaySystemMessage('Rate limit exceeded. Please wait before trying again.');
+          } else if (error.message.includes('503')) {
+            displaySystemMessage('Gemini API is temporarily unavailable. Please try again later.');
           } else {
             displaySystemMessage(`AI response error: ${error.message}`);
           }
